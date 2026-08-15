@@ -1,8 +1,9 @@
 import os
 from pathlib import Path
-from typing import List
+from typing import List, Dict, Any
 
 from dotenv import load_dotenv
+
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_huggingface import HuggingFaceEmbeddings
@@ -17,7 +18,11 @@ from langchain_core.documents import Document
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
-PDF_PATH = PROJECT_ROOT / "data" / "AgentHack_company_description.pdf"
+PDF_PATH = (
+    PROJECT_ROOT
+    / "data"
+    / "AgentHack_company_description.pdf"
+)
 
 CHROMA_PATH = PROJECT_ROOT / "chroma_db"
 
@@ -26,6 +31,8 @@ COLLECTION_NAME = "nexaflow_company_knowledge"
 EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 
 LLM_MODEL = "llama-3.3-70b-versatile"
+
+TOP_K = 4
 
 
 # ============================================================
@@ -36,64 +43,68 @@ load_dotenv()
 
 
 # ============================================================
-# 1. LOAD COMPANY PDF
+# 1. LOAD PDF
 # ============================================================
 
 def load_company_pdf() -> List[Document]:
-    """Load the NexaFlow company PDF."""
+    """Load the company PDF."""
 
     if not PDF_PATH.exists():
         raise FileNotFoundError(
-            f"Company PDF not found at: {PDF_PATH}"
+            f"Company PDF not found:\n{PDF_PATH}"
         )
 
     loader = PyPDFLoader(str(PDF_PATH))
 
     documents = loader.load()
 
-    print(f"Loaded {len(documents)} pages from company PDF.")
+    print(
+        f"Loaded {len(documents)} pages "
+        f"from company PDF."
+    )
 
     return documents
 
 
 # ============================================================
-# 2. ADD SOURCE METADATA
+# 2. ADD METADATA
 # ============================================================
 
 def add_source_metadata(
     documents: List[Document],
 ) -> List[Document]:
-    """Add metadata to every document."""
+    """
+    Add metadata that will later support
+    evidence and judge-mode explanations.
+    """
 
     for document in documents:
 
-        page_number = document.metadata.get("page", 0)
-
-        document.metadata["source"] = (
-            "NexaFlow company description"
+        page = document.metadata.get(
+            "page",
+            0,
         )
 
-        document.metadata["source_type"] = (
-            "company_document"
-        )
-
-        document.metadata["authority"] = "official"
-
-        document.metadata["page_number"] = (
-            page_number + 1
+        document.metadata.update(
+            {
+                "source": "NexaFlow company description",
+                "source_type": "company_document",
+                "authority": "official",
+                "page_number": page + 1,
+            }
         )
 
     return documents
 
 
 # ============================================================
-# 3. SPLIT DOCUMENTS
+# 3. SPLIT DOCUMENT
 # ============================================================
 
 def split_documents(
     documents: List[Document],
 ) -> List[Document]:
-    """Split documents into retrieval chunks."""
+    """Split PDF into retrieval-friendly chunks."""
 
     splitter = RecursiveCharacterTextSplitter(
         chunk_size=1000,
@@ -107,9 +118,13 @@ def split_documents(
         ],
     )
 
-    chunks = splitter.split_documents(documents)
+    chunks = splitter.split_documents(
+        documents
+    )
 
-    print(f"Created {len(chunks)} chunks.")
+    print(
+        f"Created {len(chunks)} document chunks."
+    )
 
     return chunks
 
@@ -119,9 +134,9 @@ def split_documents(
 # ============================================================
 
 def create_embeddings() -> HuggingFaceEmbeddings:
-    """Create the embedding model."""
+    """Create local embedding model."""
 
-    embeddings = HuggingFaceEmbeddings(
+    return HuggingFaceEmbeddings(
         model_name=EMBEDDING_MODEL,
         model_kwargs={
             "device": "cpu"
@@ -131,11 +146,9 @@ def create_embeddings() -> HuggingFaceEmbeddings:
         },
     )
 
-    return embeddings
-
 
 # ============================================================
-# 5. BUILD CHROMA DATABASE
+# 5. BUILD VECTOR DATABASE
 # ============================================================
 
 def build_vector_database(
@@ -153,24 +166,18 @@ def build_vector_database(
     )
 
     print(
-        f"Chroma database created at: {CHROMA_PATH}"
+        "Chroma vector database created."
     )
 
     return vector_store
 
 
 # ============================================================
-# 6. LOAD EXISTING CHROMA DATABASE
+# 6. LOAD EXISTING VECTOR DATABASE
 # ============================================================
 
 def load_vector_database() -> Chroma:
-    """Load an existing Chroma database."""
-
-    if not CHROMA_PATH.exists():
-        raise FileNotFoundError(
-            "Chroma database does not exist yet. "
-            "Run build_knowledge_base() first."
-        )
+    """Load existing Chroma database."""
 
     embeddings = create_embeddings()
 
@@ -188,21 +195,51 @@ def load_vector_database() -> Chroma:
 # ============================================================
 
 def build_knowledge_base() -> Chroma:
-    """Build the complete PDF → Chroma pipeline."""
+    """
+    Complete ingestion pipeline:
 
-    print("\n==============================")
-    print("BUILDING NEXAFLOW KNOWLEDGE BASE")
-    print("==============================\n")
+    PDF
+    ↓
+    Documents
+    ↓
+    Metadata
+    ↓
+    Chunks
+    ↓
+    Embeddings
+    ↓
+    Chroma
+    """
+
+    print(
+        "\n======================================"
+    )
+
+    print(
+        "BUILDING NEXAFLOW KNOWLEDGE BASE"
+    )
+
+    print(
+        "======================================\n"
+    )
 
     documents = load_company_pdf()
 
-    documents = add_source_metadata(documents)
+    documents = add_source_metadata(
+        documents
+    )
 
-    chunks = split_documents(documents)
+    chunks = split_documents(
+        documents
+    )
 
-    vector_store = build_vector_database(chunks)
+    vector_store = build_vector_database(
+        chunks
+    )
 
-    print("\nKnowledge base ready.")
+    print(
+        "\nKnowledge base ready."
+    )
 
     return vector_store
 
@@ -213,9 +250,12 @@ def build_knowledge_base() -> Chroma:
 
 def retrieve_evidence(
     query: str,
-    k: int = 4,
-):
-    """Retrieve relevant company-document chunks."""
+    k: int = TOP_K,
+) -> List[Document]:
+    """
+    Retrieve the most relevant company
+    knowledge chunks.
+    """
 
     vector_store = load_vector_database()
 
@@ -228,49 +268,58 @@ def retrieve_evidence(
 
 
 # ============================================================
-# 9. DISPLAY EVIDENCE
+# 9. FORMAT EVIDENCE
 # ============================================================
 
-def display_evidence(
-    results: List[Document],
-):
-    """Display retrieved evidence and metadata."""
+def format_evidence(
+    documents: List[Document],
+) -> str:
+    """
+    Convert retrieved documents into
+    structured evidence for the LLM.
+    """
 
-    print("\n==============================")
-    print("RETRIEVED EVIDENCE")
-    print("==============================\n")
+    evidence_blocks = []
 
     for index, document in enumerate(
-        results,
+        documents,
         start=1,
     ):
 
         metadata = document.metadata
 
-        print(f"--- Evidence {index} ---")
-
-        print(
-            f"Source: "
-            f"{metadata.get('source', 'Unknown')}"
+        source = metadata.get(
+            "source",
+            "Unknown",
         )
 
-        print(
-            f"Page: "
-            f"{metadata.get('page_number', 'Unknown')}"
+        page = metadata.get(
+            "page_number",
+            "Unknown",
         )
 
-        print(
-            f"Authority: "
-            f"{metadata.get('authority', 'Unknown')}"
+        authority = metadata.get(
+            "authority",
+            "Unknown",
         )
 
-        print("\nContent:")
+        content = document.page_content.strip()
 
-        print(
-            document.page_content[:1500]
+        evidence_blocks.append(
+            f"""
+[EVIDENCE {index}]
+Source: {source}
+Page: {page}
+Authority: {authority}
+
+Content:
+{content}
+"""
         )
 
-        print()
+    return "\n".join(
+        evidence_blocks
+    )
 
 
 # ============================================================
@@ -279,67 +328,63 @@ def display_evidence(
 
 def generate_answer(
     query: str,
-    results: List[Document],
+    documents: List[Document],
 ) -> str:
-    """Generate answer using retrieved evidence only."""
+    """
+    Generate an answer using ONLY
+    retrieved company evidence.
+    """
 
-    if not os.getenv("GROQ_API_KEY"):
+    api_key = os.getenv(
+        "GROQ_API_KEY"
+    )
+
+    if not api_key:
         raise EnvironmentError(
             "GROQ_API_KEY is not set."
         )
 
+    evidence = format_evidence(
+        documents
+    )
+
     llm = ChatGroq(
         model=LLM_MODEL,
         temperature=0,
-    )
-
-    evidence_blocks = []
-
-    for index, document in enumerate(
-        results,
-        start=1,
-    ):
-
-        page = document.metadata.get(
-            "page_number",
-            "Unknown",
-        )
-
-        content = document.page_content
-
-        evidence_blocks.append(
-            f"[Evidence {index} | Page {page}]\n"
-            f"{content}"
-        )
-
-    evidence = "\n\n".join(
-        evidence_blocks
+        api_key=api_key,
     )
 
     prompt = f"""
-You are NexaFlow's internal company knowledge assistant.
+You are the internal knowledge assistant
+for NexaFlow.
 
-Answer the user's question using ONLY the evidence
-provided below.
+Your job is to answer questions about
+NexaFlow using ONLY the provided evidence.
 
-Do NOT invent facts.
+STRICT RULES:
 
-If the evidence does not contain enough information,
-say:
-
-"I don't have enough evidence in the company knowledge base
-to answer that."
+1. Never invent company information.
+2. Never assume information that is not
+   present in the evidence.
+3. If the evidence is insufficient,
+   explicitly say that there is not enough
+   evidence.
+4. Prefer official company information.
+5. Keep answers concise and useful.
+6. When possible, mention the source page.
 
 USER QUESTION:
 {query}
 
-EVIDENCE:
+COMPANY EVIDENCE:
 {evidence}
 
-Answer clearly and concisely.
+Answer:
 """
 
-    response = llm.invoke(prompt)
+    response = llm.invoke(
+        prompt
+    )
 
     return response.content
 
@@ -350,43 +395,95 @@ Answer clearly and concisely.
 
 def ask_company_knowledge(
     query: str,
-    k: int = 4,
-):
+    k: int = TOP_K,
+) -> Dict[str, Any]:
     """
-    Complete RAG operation:
+    Complete RAG operation.
 
     Query
-    ↓
-    Retrieve evidence
-    ↓
-    Generate grounded answer
+      ↓
+    Retrieval
+      ↓
+    Evidence
+      ↓
+    Grounded LLM answer
     """
 
-    results = retrieve_evidence(
-        query=query,
+    documents = retrieve_evidence(
+        query,
         k=k,
     )
 
     answer = generate_answer(
-        query=query,
-        results=results,
+        query,
+        documents,
     )
+
+    evidence = []
+
+    for document in documents:
+
+        evidence.append(
+            {
+                "content": document.page_content,
+                "source": document.metadata.get(
+                    "source"
+                ),
+                "page": document.metadata.get(
+                    "page_number"
+                ),
+                "authority": document.metadata.get(
+                    "authority"
+                ),
+            }
+        )
 
     return {
         "query": query,
         "answer": answer,
-        "evidence": results,
+        "evidence": evidence,
     }
 
 
 # ============================================================
-# MODULE TEST
+# 12. LANGGRAPH-READY COMPANY KNOWLEDGE TOOL
+# ============================================================
+
+def company_knowledge(
+    query: str,
+) -> str:
+    """
+    Simple interface that our LangGraph
+    agent can call later.
+
+    Input:
+        query
+
+    Output:
+        grounded company answer
+    """
+
+    result = ask_company_knowledge(
+        query
+    )
+
+    return result["answer"]
+
+
+# ============================================================
+# 13. LOCAL TEST
 # ============================================================
 
 if __name__ == "__main__":
 
-    print("NexaFlow RAG module loaded.")
+    print(
+        "NexaFlow RAG module loaded."
+    )
 
-    print(f"PDF: {PDF_PATH}")
+    print(
+        f"PDF: {PDF_PATH}"
+    )
 
-    print(f"Chroma: {CHROMA_PATH}")
+    print(
+        f"Chroma: {CHROMA_PATH}"
+    )
