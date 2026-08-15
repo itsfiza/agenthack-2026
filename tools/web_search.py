@@ -1,6 +1,5 @@
 import os
 from typing import List, Dict, Any
-from urllib.parse import urlparse
 
 from tavily import TavilyClient
 
@@ -10,10 +9,6 @@ from tavily import TavilyClient
 # ============================================================
 
 def get_tavily_client() -> TavilyClient:
-    """
-    Create Tavily client using the environment variable.
-    """
-
     api_key = os.getenv("TAVILY_API_KEY")
 
     if not api_key:
@@ -34,9 +29,6 @@ def search_web(
     query: str,
     max_results: int = 5,
 ) -> List[Dict[str, Any]]:
-    """
-    Search the public web and return structured results.
-    """
 
     client = get_tavily_client()
 
@@ -65,146 +57,30 @@ def search_web(
 
 
 # ============================================================
-# DOMAIN HELPERS
+# HELPER — REJECT OBVIOUS NON-COMPANY SOURCES
 # ============================================================
 
-def extract_domain(url: str) -> str:
-    """
-    Extract clean domain from a URL.
-    """
+def is_obvious_non_company(url: str, title: str) -> bool:
 
-    try:
-        parsed = urlparse(url)
-
-        domain = parsed.netloc.lower()
-
-        if domain.startswith("www."):
-            domain = domain[4:]
-
-        return domain
-
-    except Exception:
-        return ""
-
-
-def is_directory_or_social_domain(url: str) -> bool:
-    """
-    Reject obvious directories, social platforms and
-    review/listing websites during company discovery.
-    """
-
-    domain = extract_domain(url)
+    url = url.lower()
+    title = title.lower()
 
     blocked_domains = [
         "instagram.com",
         "facebook.com",
-        "linkedin.com",
         "youtube.com",
+        "linkedin.com",
+        "reddit.com",
         "twitter.com",
         "x.com",
-        "reddit.com",
-        "goodfirms.co",
-        "clutch.co",
-        "ensun.io",
-        "crunchbase.com",
-        "wikipedia.org",
-        "medium.com",
-        "yelp.com",
-        "tripadvisor.com",
+        "tiktok.com",
     ]
 
-    return any(
-        domain == blocked
-        or domain.endswith("." + blocked)
-        for blocked in blocked_domains
-    )
+    for domain in blocked_domains:
+        if domain in url:
+            return True
 
-
-def looks_like_company_page(
-    title: str,
-    url: str,
-    content: str,
-) -> bool:
-    """
-    Heuristic check for whether a search result looks like
-    an actual company/business page instead of an article,
-    directory, social page or generic list.
-    """
-
-    text = (
-        title
-        + " "
-        + content[:4000]
-    ).lower()
-
-    # ----------------------------------------------
-    # Reject obvious article/list pages
-    # ----------------------------------------------
-
-    article_signals = [
-        "top ",
-        "best ",
-        "guide",
-        "list",
-        "reviews",
-        "statistics",
-        "how to",
-        "2026",
-        "2025",
-        "companies in pakistan",
-        "companies in",
-        "leading companies",
-        "directory",
-        "ranking",
-    ]
-
-    title_lower = title.lower()
-
-    # If the TITLE itself strongly looks like an article/list,
-    # don't treat it as the company.
-    if any(
-        signal in title_lower
-        for signal in article_signals
-    ):
-        return False
-
-    # ----------------------------------------------
-    # Company/business signals
-    # ----------------------------------------------
-
-    company_signals = [
-        "about us",
-        "our services",
-        "our products",
-        "contact us",
-        "we offer",
-        "who we are",
-        "our company",
-        "founded",
-        "headquartered",
-        "employees",
-        "solutions",
-        "services",
-    ]
-
-    has_company_signal = any(
-        signal in text
-        for signal in company_signals
-    )
-
-    # ----------------------------------------------
-    # Must have a real-looking domain
-    # ----------------------------------------------
-
-    domain = extract_domain(url)
-
-    if not domain:
-        return False
-
-    if is_directory_or_social_domain(url):
-        return False
-
-    return has_company_signal
+    return False
 
 
 # ============================================================
@@ -218,151 +94,224 @@ def discover_companies(
     target_problem: str = "",
     max_results: int = 10,
 ) -> List[Dict[str, Any]]:
-    """
-    Discover potential companies matching an ICP.
-
-    IMPORTANT:
-    Search results are candidates only.
-    We reject obvious articles, directories and social
-    pages before passing candidates to the sales pipeline.
-    """
-
-    query_parts = [
-        f"{industry} companies",
-        location,
-    ]
-
-    if company_size:
-        query_parts.append(
-            company_size
-        )
-
-    if target_problem:
-        query_parts.append(
-            target_problem
-        )
-
-    query = " ".join(query_parts)
 
     print(
-        f"[DISCOVERY] Query: {query}"
+        f"[DISCOVERY] Query: "
+        f"{industry} companies "
+        f"{location} "
+        f"{company_size} "
+        f"{target_problem}"
     )
 
-    raw_results = search_web(
-        query=query,
-        max_results=max_results,
-    )
+    # --------------------------------------------------------
+    # Use several targeted queries.
+    #
+    # This is much more reliable than one giant query.
+    # --------------------------------------------------------
+
+    queries = [
+        f"{industry} companies {location} {company_size}",
+
+        f"{industry} companies {location} "
+        f"{target_problem}",
+
+        f"{industry} businesses {location} "
+        f"customer service automation",
+
+        f"{industry} companies {location} "
+        f"WhatsApp customer support",
+
+        f"{industry} companies {location} AI automation",
+    ]
 
     companies = []
+    seen_urls = set()
 
-    seen_domains = set()
+    # --------------------------------------------------------
+    # Search each query
+    # --------------------------------------------------------
 
-    for result in raw_results:
+    for query in queries:
 
-        title = result.get(
-            "title",
-            ""
+        print(
+            f"\n[DISCOVERY] Searching: {query}"
         )
 
-        url = result.get(
-            "url",
-            ""
-        )
+        try:
 
-        content = result.get(
-            "content",
-            ""
-        )
+            raw_results = search_web(
+                query=query,
+                max_results=max_results,
+            )
 
-        domain = extract_domain(url)
-
-        # ----------------------------------------------
-        # Reject directories/social platforms
-        # ----------------------------------------------
-
-        if is_directory_or_social_domain(url):
+        except Exception as e:
 
             print(
-                f"[DISCOVERY] Skipping non-company source: {title}"
+                f"[DISCOVERY] Search failed: {e}"
             )
 
             continue
 
-        # ----------------------------------------------
-        # Reject duplicate domains
-        # ----------------------------------------------
+        for result in raw_results:
 
-        if domain in seen_domains:
+            name = result.get(
+                "title",
+                ""
+            ).strip()
 
-            continue
+            url = result.get(
+                "url",
+                ""
+            ).strip()
 
-        # ----------------------------------------------
-        # Reject obvious article/list pages
-        # ----------------------------------------------
+            description = result.get(
+                "content",
+                ""
+            ).strip()
 
-        if not looks_like_company_page(
-            title=title,
-            url=url,
-            content=content,
-        ):
+            # ------------------------------------------------
+            # Skip empty results
+            # ------------------------------------------------
 
-            print(
-                f"[DISCOVERY] Skipping article/list result: {title}"
+            if not name or not url:
+                continue
+
+            # ------------------------------------------------
+            # Avoid duplicate URLs
+            # ------------------------------------------------
+
+            if url in seen_urls:
+                continue
+
+            # ------------------------------------------------
+            # Reject social media only
+            # ------------------------------------------------
+
+            if is_obvious_non_company(
+                url,
+                name
+            ):
+
+                print(
+                    f"[DISCOVERY] Skipping social source: "
+                    f"{name}"
+                )
+
+                continue
+
+            # ------------------------------------------------
+            # Basic relevance check
+            # ------------------------------------------------
+
+            text = (
+                name
+                + " "
+                + description
+            ).lower()
+
+            relevance_terms = [
+                "ecommerce",
+                "e-commerce",
+                "online store",
+                "retail",
+                "shop",
+                "shopping",
+                "customer",
+                "support",
+                "automation",
+                "ai",
+                "whatsapp",
+                "commerce",
+            ]
+
+            relevance_score = sum(
+                1
+                for term in relevance_terms
+                if term in text
             )
 
-            continue
+            # If the result has no relationship whatsoever
+            # to our ICP, skip it.
+            if relevance_score < 2:
 
-        seen_domains.add(domain)
+                print(
+                    f"[DISCOVERY] Skipping low relevance: "
+                    f"{name}"
+                )
 
-        # ----------------------------------------------
-        # Create clean candidate
-        # ----------------------------------------------
+                continue
 
-        companies.append(
-            {
-                "name": title,
-                "website": url,
-                "domain": domain,
-                "description": content,
-                "search_score": result.get(
-                    "score",
-                    0
-                ),
-                "discovery_query": query,
-                "source": "Tavily Web Search",
-                "lead_type": "company_candidate",
-            }
-        )
+            seen_urls.add(url)
 
-    # ----------------------------------------------
+            companies.append(
+                {
+                    "name": name,
+
+                    "website": url,
+
+                    "description": description,
+
+                    "search_score": result.get(
+                        "score",
+                        0
+                    ),
+
+                    "relevance_score":
+                        relevance_score,
+
+                    "discovery_query": query,
+
+                    "source":
+                        "Tavily Web Search",
+                }
+            )
+
+            print(
+                f"[DISCOVERY] Candidate accepted: "
+                f"{name}"
+            )
+
+            # ------------------------------------------------
+            # Stop after enough candidates
+            # ------------------------------------------------
+
+            if len(companies) >= max_results:
+                break
+
+        if len(companies) >= max_results:
+            break
+
+    # --------------------------------------------------------
     # Rank candidates
-    # ----------------------------------------------
+    # --------------------------------------------------------
 
     companies = sorted(
         companies,
-        key=lambda x: x.get(
-            "search_score",
-            0
+        key=lambda x: (
+            x.get(
+                "relevance_score",
+                0
+            ),
+            x.get(
+                "search_score",
+                0
+            ),
         ),
         reverse=True,
-    )[:max_results]
-
-    print(
-        f"[DISCOVERY] {len(companies)} company candidates accepted."
     )
 
-    for company in companies:
+    companies = companies[:max_results]
 
-        print(
-            f"  ✓ {company['name']} "
-            f"| {company['domain']}"
-        )
+    print(
+        f"\n[DISCOVERY] "
+        f"{len(companies)} company candidates accepted."
+    )
 
     return companies
 
 
 # ============================================================
-# SIMPLE RESEARCH
+# SIMPLE COMPANY RESEARCH
 # ============================================================
 
 def research_company(
@@ -370,9 +319,6 @@ def research_company(
     website: str = "",
     max_results: int = 5,
 ) -> List[Dict[str, Any]]:
-    """
-    Perform deeper web research about a candidate company.
-    """
 
     query_parts = [
         f'"{company_name}"',
@@ -411,24 +357,36 @@ def deep_research_company(
     website: str = "",
     max_results_per_query: int = 3,
 ):
-    """
-    Perform structured research on a candidate company.
-
-    Evidence categories:
-        1. Products/services
-        2. Customer support / pain points
-        3. AI / automation
-        4. Growth / expansion
-    """
 
     research_queries = [
-        f'"{company_name}" products services',
-        f'"{company_name}" customer support ecommerce',
-        f'"{company_name}" automation AI technology',
-        f'"{company_name}" growth expansion news',
+
+        f'"{company_name}" '
+        f'products services',
+
+        f'"{company_name}" '
+        f'customer support ecommerce',
+
+        f'"{company_name}" '
+        f'automation AI technology',
+
+        f'"{company_name}" '
+        f'WhatsApp customer service',
+
+        f'"{company_name}" '
+        f'growth expansion news',
+
+        f'"{company_name}" '
+        f'customers pain points',
+
+        f'"{company_name}" '
+        f'contact leadership',
     ]
 
     all_evidence = []
+
+    print(
+        f"\nResearching: {company_name}"
+    )
 
     for query in research_queries:
 
@@ -436,36 +394,66 @@ def deep_research_company(
             f'  → Searching: "{query}"'
         )
 
-        results = search_web(
-            query=query,
-            max_results=max_results_per_query,
-        )
+        try:
+
+            results = search_web(
+                query=query,
+                max_results=
+                    max_results_per_query,
+            )
+
+        except Exception as e:
+
+            print(
+                f"  → Research search failed: "
+                f"{e}"
+            )
+
+            continue
 
         for result in results:
 
             all_evidence.append(
                 {
-                    "company": company_name,
-                    "query": query,
-                    "title": result.get(
-                        "title",
-                        ""
-                    ),
-                    "url": result.get(
-                        "url",
-                        ""
-                    ),
-                    "content": result.get(
-                        "content",
-                        ""
-                    ),
-                    "search_score": result.get(
-                        "score",
-                        0
-                    ),
-                    "source": "Tavily",
+                    "company":
+                        company_name,
+
+                    "query":
+                        query,
+
+                    "title":
+                        result.get(
+                            "title",
+                            ""
+                        ),
+
+                    "url":
+                        result.get(
+                            "url",
+                            ""
+                        ),
+
+                    "content":
+                        result.get(
+                            "content",
+                            ""
+                        ),
+
+                    "search_score":
+                        result.get(
+                            "score",
+                            0
+                        ),
+
+                    "source":
+                        "Tavily",
                 }
             )
+
+    print(
+        f"[RESEARCH] Collected "
+        f"{len(all_evidence)} evidence items."
+    )
 
     return all_evidence
 
