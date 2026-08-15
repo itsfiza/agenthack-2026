@@ -1,302 +1,392 @@
-{
- "cells": [
-  {
-   "cell_type": "code",
-   "execution_count": null,
-   "id": "e021e56c",
-   "metadata": {
-    "vscode": {
-     "languageId": "plaintext"
+import os
+from pathlib import Path
+from typing import List
+
+from dotenv import load_dotenv
+from langchain_community.document_loaders import PyPDFLoader
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+from langchain_huggingface import HuggingFaceEmbeddings
+from langchain_chroma import Chroma
+from langchain_groq import ChatGroq
+from langchain_core.documents import Document
+
+
+# ============================================================
+# CONFIGURATION
+# ============================================================
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
+PDF_PATH = PROJECT_ROOT / "data" / "AgentHack_company_description.pdf"
+
+CHROMA_PATH = PROJECT_ROOT / "chroma_db"
+
+COLLECTION_NAME = "nexaflow_company_knowledge"
+
+EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
+
+LLM_MODEL = "llama-3.3-70b-versatile"
+
+
+# ============================================================
+# ENVIRONMENT
+# ============================================================
+
+load_dotenv()
+
+
+# ============================================================
+# 1. LOAD COMPANY PDF
+# ============================================================
+
+def load_company_pdf() -> List[Document]:
+    """Load the NexaFlow company PDF."""
+
+    if not PDF_PATH.exists():
+        raise FileNotFoundError(
+            f"Company PDF not found at: {PDF_PATH}"
+        )
+
+    loader = PyPDFLoader(str(PDF_PATH))
+
+    documents = loader.load()
+
+    print(f"Loaded {len(documents)} pages from company PDF.")
+
+    return documents
+
+
+# ============================================================
+# 2. ADD SOURCE METADATA
+# ============================================================
+
+def add_source_metadata(
+    documents: List[Document],
+) -> List[Document]:
+    """Add metadata to every document."""
+
+    for document in documents:
+
+        page_number = document.metadata.get("page", 0)
+
+        document.metadata["source"] = (
+            "NexaFlow company description"
+        )
+
+        document.metadata["source_type"] = (
+            "company_document"
+        )
+
+        document.metadata["authority"] = "official"
+
+        document.metadata["page_number"] = (
+            page_number + 1
+        )
+
+    return documents
+
+
+# ============================================================
+# 3. SPLIT DOCUMENTS
+# ============================================================
+
+def split_documents(
+    documents: List[Document],
+) -> List[Document]:
+    """Split documents into retrieval chunks."""
+
+    splitter = RecursiveCharacterTextSplitter(
+        chunk_size=1000,
+        chunk_overlap=150,
+        separators=[
+            "\n\n",
+            "\n",
+            ". ",
+            " ",
+            "",
+        ],
+    )
+
+    chunks = splitter.split_documents(documents)
+
+    print(f"Created {len(chunks)} chunks.")
+
+    return chunks
+
+
+# ============================================================
+# 4. CREATE EMBEDDINGS
+# ============================================================
+
+def create_embeddings() -> HuggingFaceEmbeddings:
+    """Create the embedding model."""
+
+    embeddings = HuggingFaceEmbeddings(
+        model_name=EMBEDDING_MODEL,
+        model_kwargs={
+            "device": "cpu"
+        },
+        encode_kwargs={
+            "normalize_embeddings": True
+        },
+    )
+
+    return embeddings
+
+
+# ============================================================
+# 5. BUILD CHROMA DATABASE
+# ============================================================
+
+def build_vector_database(
+    chunks: List[Document],
+) -> Chroma:
+    """Create persistent Chroma vector database."""
+
+    embeddings = create_embeddings()
+
+    vector_store = Chroma.from_documents(
+        documents=chunks,
+        embedding=embeddings,
+        collection_name=COLLECTION_NAME,
+        persist_directory=str(CHROMA_PATH),
+    )
+
+    print(
+        f"Chroma database created at: {CHROMA_PATH}"
+    )
+
+    return vector_store
+
+
+# ============================================================
+# 6. LOAD EXISTING CHROMA DATABASE
+# ============================================================
+
+def load_vector_database() -> Chroma:
+    """Load an existing Chroma database."""
+
+    if not CHROMA_PATH.exists():
+        raise FileNotFoundError(
+            "Chroma database does not exist yet. "
+            "Run build_knowledge_base() first."
+        )
+
+    embeddings = create_embeddings()
+
+    vector_store = Chroma(
+        collection_name=COLLECTION_NAME,
+        embedding_function=embeddings,
+        persist_directory=str(CHROMA_PATH),
+    )
+
+    return vector_store
+
+
+# ============================================================
+# 7. BUILD COMPLETE KNOWLEDGE BASE
+# ============================================================
+
+def build_knowledge_base() -> Chroma:
+    """Build the complete PDF → Chroma pipeline."""
+
+    print("\n==============================")
+    print("BUILDING NEXAFLOW KNOWLEDGE BASE")
+    print("==============================\n")
+
+    documents = load_company_pdf()
+
+    documents = add_source_metadata(documents)
+
+    chunks = split_documents(documents)
+
+    vector_store = build_vector_database(chunks)
+
+    print("\nKnowledge base ready.")
+
+    return vector_store
+
+
+# ============================================================
+# 8. RETRIEVE EVIDENCE
+# ============================================================
+
+def retrieve_evidence(
+    query: str,
+    k: int = 4,
+):
+    """Retrieve relevant company-document chunks."""
+
+    vector_store = load_vector_database()
+
+    results = vector_store.similarity_search(
+        query,
+        k=k,
+    )
+
+    return results
+
+
+# ============================================================
+# 9. DISPLAY EVIDENCE
+# ============================================================
+
+def display_evidence(
+    results: List[Document],
+):
+    """Display retrieved evidence and metadata."""
+
+    print("\n==============================")
+    print("RETRIEVED EVIDENCE")
+    print("==============================\n")
+
+    for index, document in enumerate(
+        results,
+        start=1,
+    ):
+
+        metadata = document.metadata
+
+        print(f"--- Evidence {index} ---")
+
+        print(
+            f"Source: "
+            f"{metadata.get('source', 'Unknown')}"
+        )
+
+        print(
+            f"Page: "
+            f"{metadata.get('page_number', 'Unknown')}"
+        )
+
+        print(
+            f"Authority: "
+            f"{metadata.get('authority', 'Unknown')}"
+        )
+
+        print("\nContent:")
+
+        print(
+            document.page_content[:1500]
+        )
+
+        print()
+
+
+# ============================================================
+# 10. GENERATE GROUNDED ANSWER
+# ============================================================
+
+def generate_answer(
+    query: str,
+    results: List[Document],
+) -> str:
+    """Generate answer using retrieved evidence only."""
+
+    if not os.getenv("GROQ_API_KEY"):
+        raise EnvironmentError(
+            "GROQ_API_KEY is not set."
+        )
+
+    llm = ChatGroq(
+        model=LLM_MODEL,
+        temperature=0,
+    )
+
+    evidence_blocks = []
+
+    for index, document in enumerate(
+        results,
+        start=1,
+    ):
+
+        page = document.metadata.get(
+            "page_number",
+            "Unknown",
+        )
+
+        content = document.page_content
+
+        evidence_blocks.append(
+            f"[Evidence {index} | Page {page}]\n"
+            f"{content}"
+        )
+
+    evidence = "\n\n".join(
+        evidence_blocks
+    )
+
+    prompt = f"""
+You are NexaFlow's internal company knowledge assistant.
+
+Answer the user's question using ONLY the evidence
+provided below.
+
+Do NOT invent facts.
+
+If the evidence does not contain enough information,
+say:
+
+"I don't have enough evidence in the company knowledge base
+to answer that."
+
+USER QUESTION:
+{query}
+
+EVIDENCE:
+{evidence}
+
+Answer clearly and concisely.
+"""
+
+    response = llm.invoke(prompt)
+
+    return response.content
+
+
+# ============================================================
+# 11. COMPLETE RAG QUERY
+# ============================================================
+
+def ask_company_knowledge(
+    query: str,
+    k: int = 4,
+):
+    """
+    Complete RAG operation:
+
+    Query
+    ↓
+    Retrieve evidence
+    ↓
+    Generate grounded answer
+    """
+
+    results = retrieve_evidence(
+        query=query,
+        k=k,
+    )
+
+    answer = generate_answer(
+        query=query,
+        results=results,
+    )
+
+    return {
+        "query": query,
+        "answer": answer,
+        "evidence": results,
     }
-   },
-   "outputs": [],
-   "source": [
-    "from pathlib import Path\n",
-    "\n",
-    "from langchain_community.document_loaders import PyPDFLoader\n",
-    "from langchain_text_splitters import RecursiveCharacterTextSplitter\n",
-    "from langchain_huggingface import HuggingFaceEmbeddings\n",
-    "from langchain_chroma import Chroma\n",
-    "\n",
-    "\n",
-    "# ============================================================\n",
-    "# 1. PATHS\n",
-    "# ============================================================\n",
-    "\n",
-    "BASE_DIR = Path(__file__).resolve().parent.parent\n",
-    "\n",
-    "PDF_PATH = BASE_DIR / \"data\" / \"AgentHack_company_description.pdf\"\n",
-    "\n",
-    "CHROMA_DIR = BASE_DIR / \"chroma_db\"\n",
-    "\n",
-    "COLLECTION_NAME = \"nexaflow_company_knowledge\"\n",
-    "\n",
-    "\n",
-    "# ============================================================\n",
-    "# 2. LOAD PDF\n",
-    "# ============================================================\n",
-    "\n",
-    "def load_company_pdf():\n",
-    "    \"\"\"\n",
-    "    Load the NexaFlow company dossier page by page.\n",
-    "    \"\"\"\n",
-    "\n",
-    "    if not PDF_PATH.exists():\n",
-    "        raise FileNotFoundError(\n",
-    "            f\"Company PDF not found at: {PDF_PATH}\"\n",
-    "        )\n",
-    "\n",
-    "    loader = PyPDFLoader(str(PDF_PATH))\n",
-    "\n",
-    "    documents = loader.load()\n",
-    "\n",
-    "    print(f\"PDF loaded successfully.\")\n",
-    "    print(f\"Number of pages: {len(documents)}\")\n",
-    "\n",
-    "    return documents\n",
-    "\n",
-    "\n",
-    "# ============================================================\n",
-    "# 3. ADD METADATA\n",
-    "# ============================================================\n",
-    "\n",
-    "def add_metadata(documents):\n",
-    "    \"\"\"\n",
-    "    Add useful metadata to every document/page.\n",
-    "\n",
-    "    We keep this simple for the MVP.\n",
-    "    \"\"\"\n",
-    "\n",
-    "    for document in documents:\n",
-    "\n",
-    "        page_number = document.metadata.get(\"page\", 0) + 1\n",
-    "\n",
-    "        document.metadata.update(\n",
-    "            {\n",
-    "                \"source\": \"NexaFlow company dossier\",\n",
-    "                \"page\": page_number,\n",
-    "                \"source_type\": \"company_dossier\",\n",
-    "            }\n",
-    "        )\n",
-    "\n",
-    "    return documents\n",
-    "\n",
-    "\n",
-    "# ============================================================\n",
-    "# 4. SPLIT INTO CHUNKS\n",
-    "# ============================================================\n",
-    "\n",
-    "def split_documents(documents):\n",
-    "    \"\"\"\n",
-    "    Split the PDF into smaller chunks suitable for retrieval.\n",
-    "    \"\"\"\n",
-    "\n",
-    "    splitter = RecursiveCharacterTextSplitter(\n",
-    "        chunk_size=1000,\n",
-    "        chunk_overlap=150,\n",
-    "        separators=[\n",
-    "            \"\\n\\n\",\n",
-    "            \"\\n\",\n",
-    "            \". \",\n",
-    "            \" \",\n",
-    "            \"\",\n",
-    "        ],\n",
-    "    )\n",
-    "\n",
-    "    chunks = splitter.split_documents(documents)\n",
-    "\n",
-    "    print(f\"Created {len(chunks)} chunks.\")\n",
-    "\n",
-    "    return chunks\n",
-    "\n",
-    "\n",
-    "# ============================================================\n",
-    "# 5. CREATE EMBEDDING MODEL\n",
-    "# ============================================================\n",
-    "\n",
-    "def get_embedding_model():\n",
-    "    \"\"\"\n",
-    "    Load the local embedding model.\n",
-    "\n",
-    "    The model is downloaded the first time it is used.\n",
-    "    \"\"\"\n",
-    "\n",
-    "    embeddings = HuggingFaceEmbeddings(\n",
-    "        model_name=\"sentence-transformers/all-MiniLM-L6-v2\",\n",
-    "        model_kwargs={\n",
-    "            \"device\": \"cpu\"\n",
-    "        },\n",
-    "        encode_kwargs={\n",
-    "            \"normalize_embeddings\": True\n",
-    "        },\n",
-    "    )\n",
-    "\n",
-    "    return embeddings\n",
-    "\n",
-    "\n",
-    "# ============================================================\n",
-    "# 6. CREATE / LOAD VECTOR DATABASE\n",
-    "# ============================================================\n",
-    "\n",
-    "def create_vector_store(chunks):\n",
-    "    \"\"\"\n",
-    "    Create a persistent local Chroma vector database.\n",
-    "    \"\"\"\n",
-    "\n",
-    "    embeddings = get_embedding_model()\n",
-    "\n",
-    "    vector_store = Chroma.from_documents(\n",
-    "        documents=chunks,\n",
-    "        embedding=embeddings,\n",
-    "        collection_name=COLLECTION_NAME,\n",
-    "        persist_directory=str(CHROMA_DIR),\n",
-    "    )\n",
-    "\n",
-    "    print(\"Vector database created successfully.\")\n",
-    "\n",
-    "    return vector_store\n",
-    "\n",
-    "\n",
-    "# ============================================================\n",
-    "# 7. LOAD EXISTING VECTOR DATABASE\n",
-    "# ============================================================\n",
-    "\n",
-    "def load_vector_store():\n",
-    "    \"\"\"\n",
-    "    Load an existing Chroma database.\n",
-    "    \"\"\"\n",
-    "\n",
-    "    embeddings = get_embedding_model()\n",
-    "\n",
-    "    vector_store = Chroma(\n",
-    "        collection_name=COLLECTION_NAME,\n",
-    "        embedding_function=embeddings,\n",
-    "        persist_directory=str(CHROMA_DIR),\n",
-    "    )\n",
-    "\n",
-    "    return vector_store\n",
-    "\n",
-    "\n",
-    "# ============================================================\n",
-    "# 8. BUILD RAG DATABASE\n",
-    "# ============================================================\n",
-    "\n",
-    "def build_knowledge_base():\n",
-    "    \"\"\"\n",
-    "    Complete ingestion pipeline:\n",
-    "\n",
-    "    PDF\n",
-    "      ↓\n",
-    "    Pages\n",
-    "      ↓\n",
-    "    Metadata\n",
-    "      ↓\n",
-    "    Chunks\n",
-    "      ↓\n",
-    "    Embeddings\n",
-    "      ↓\n",
-    "    Chroma\n",
-    "    \"\"\"\n",
-    "\n",
-    "    print(\"\\n=== BUILDING NEXAFLOW KNOWLEDGE BASE ===\\n\")\n",
-    "\n",
-    "    documents = load_company_pdf()\n",
-    "\n",
-    "    documents = add_metadata(documents)\n",
-    "\n",
-    "    chunks = split_documents(documents)\n",
-    "\n",
-    "    vector_store = create_vector_store(chunks)\n",
-    "\n",
-    "    print(\"\\n=== KNOWLEDGE BASE READY ===\\n\")\n",
-    "\n",
-    "    return vector_store\n",
-    "\n",
-    "\n",
-    "# ============================================================\n",
-    "# 9. RETRIEVE RELEVANT INFORMATION\n",
-    "# ============================================================\n",
-    "\n",
-    "def search_company_knowledge(\n",
-    "    query,\n",
-    "    k=4,\n",
-    "):\n",
-    "    \"\"\"\n",
-    "    Retrieve the most relevant NexaFlow information.\n",
-    "    \"\"\"\n",
-    "\n",
-    "    vector_store = load_vector_store()\n",
-    "\n",
-    "    results = vector_store.similarity_search(\n",
-    "        query,\n",
-    "        k=k,\n",
-    "    )\n",
-    "\n",
-    "    return results\n",
-    "\n",
-    "\n",
-    "# ============================================================\n",
-    "# 10. PRINT SEARCH RESULTS\n",
-    "# ============================================================\n",
-    "\n",
-    "def display_results(query, results):\n",
-    "    \"\"\"\n",
-    "    Display retrieved evidence in a readable format.\n",
-    "    \"\"\"\n",
-    "\n",
-    "    print(\"\\n\" + \"=\" * 70)\n",
-    "    print(f\"QUERY: {query}\")\n",
-    "    print(\"=\" * 70)\n",
-    "\n",
-    "    for index, document in enumerate(results, start=1):\n",
-    "\n",
-    "        print(f\"\\n--- RESULT {index} ---\")\n",
-    "\n",
-    "        print(\n",
-    "            f\"Source: \"\n",
-    "            f\"{document.metadata.get('source', 'Unknown')}\"\n",
-    "        )\n",
-    "\n",
-    "        print(\n",
-    "            f\"Page: \"\n",
-    "            f\"{document.metadata.get('page', 'Unknown')}\"\n",
-    "        )\n",
-    "\n",
-    "        print(\"\\nContent:\")\n",
-    "        print(document.page_content)\n",
-    "\n",
-    "    print(\"\\n\" + \"=\" * 70)\n",
-    "\n",
-    "\n",
-    "# ============================================================\n",
-    "# 11. MAIN TEST\n",
-    "# ============================================================\n",
-    "\n",
-    "if __name__ == \"__main__\":\n",
-    "\n",
-    "    # First build the database.\n",
-    "    build_knowledge_base()\n",
-    "\n",
-    "    # Test retrieval.\n",
-    "    query = \"What services does NexaFlow offer?\"\n",
-    "\n",
-    "    results = search_company_knowledge(\n",
-    "        query=query,\n",
-    "        k=4,\n",
-    "    )\n",
-    "\n",
-    "    display_results(\n",
-    "        query=query,\n",
-    "        results=results,\n",
-    "    )"
-   ]
-  }
- ],
- "metadata": {
-  "language_info": {
-   "name": "python"
-  }
- },
- "nbformat": 4,
- "nbformat_minor": 5
-}
+
+
+# ============================================================
+# MODULE TEST
+# ============================================================
+
+if __name__ == "__main__":
+
+    print("NexaFlow RAG module loaded.")
+
+    print(f"PDF: {PDF_PATH}")
+
+    print(f"Chroma: {CHROMA_PATH}")
