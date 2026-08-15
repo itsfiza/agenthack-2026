@@ -4,7 +4,7 @@ from langgraph.graph import StateGraph, START, END
 
 from tools.web_search import discover_companies
 from agents.qualification import qualify_lead
-
+from agents.research import research_leads
 
 # ============================================================
 # STATE
@@ -46,7 +46,7 @@ class SalesState(TypedDict, total=False):
     # Selected lead
     # --------------------------------------------------------
     selected_lead: Dict[str, Any]
-
+    selected_score: int
     # --------------------------------------------------------
     # Service matching
     # --------------------------------------------------------
@@ -329,41 +329,67 @@ def filter_leads(state: SalesState) -> SalesState:
 # change ONLY the import/function call here.
 # ============================================================
 
-def research_leads(state: SalesState) -> SalesState:
+# ============================================================
+# NODE 4 — DEEP RESEARCH
+# ============================================================
+
+def research_filtered_leads(
+    state: SalesState
+) -> SalesState:
 
     print("\n" + "=" * 60)
     print("[RESEARCH] Deep research on filtered leads")
     print("=" * 60)
 
-    filtered_leads = state.get(
+    leads = state.get(
         "filtered_leads",
         []
     )
 
-    research = {}
+    icp = state.get(
+        "icp",
+        {}
+    )
 
-    # --------------------------------------------------------
-    # Import here so the graph can still load if research
-    # module is being developed separately.
-    # --------------------------------------------------------
+    if not leads:
+
+        print(
+            "[RESEARCH] No filtered leads."
+        )
+
+        return {
+            **state,
+            "research": {},
+            "current_stage": "RESEARCH_SKIPPED",
+        }
 
     try:
 
-        from agents.research import research_company
-
-    except ImportError as e:
-
-        error_message = (
-            f"Research module unavailable: {str(e)}"
+        research = research_leads(
+            leads=leads,
+            icp=icp,
         )
 
-        print(f"[ERROR] {error_message}")
+        return {
+            **state,
+            "research": research,
+            "current_stage": "RESEARCH_COMPLETED",
+        }
 
-        errors = list(
-            state.get("errors", [])
+    except Exception as e:
+
+        print(
+            f"[ERROR] Research failed: {e}"
         )
 
-        errors.append(error_message)
+        errors = state.get(
+            "errors",
+            []
+        )
+
+        errors.append(
+            f"Research failed: {str(e)}"
+        )
 
         return {
             **state,
@@ -371,57 +397,6 @@ def research_leads(state: SalesState) -> SalesState:
             "errors": errors,
             "current_stage": "RESEARCH_FAILED",
         }
-
-    # --------------------------------------------------------
-    # Research each filtered lead
-    # --------------------------------------------------------
-
-    for lead in filtered_leads:
-
-        company_name = lead.get(
-            "name",
-            "Unknown"
-        )
-
-        website = lead.get(
-            "website",
-            ""
-        )
-
-        print(
-            f"\n[RESEARCH] {company_name}"
-        )
-
-        try:
-
-            evidence = research_company(
-                company=lead
-            )
-
-            research[
-                company_name
-            ] = evidence
-
-            print(
-                f"  ✓ Collected {len(evidence)} evidence items."
-            )
-
-        except Exception as e:
-
-            print(
-                f"  ✗ Research failed: {e}"
-            )
-
-            research[
-                company_name
-            ] = []
-
-    return {
-        **state,
-        "research": research,
-        "current_stage": "LEADS_RESEARCHED",
-    }
-
 
 # ============================================================
 # NODE 5 — QUALIFICATION
