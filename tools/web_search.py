@@ -182,7 +182,50 @@ def research_company(
         query=query,
         max_results=max_results,
     )
+def deep_research_company(
+    company_name: str,
+    website: str = "",
+    max_results_per_query: int = 3,
+):
+    """
+    Perform structured research on a candidate company.
 
+    We search multiple evidence categories separately so the
+    qualification stage receives useful evidence rather than
+    one generic search result.
+    """
+
+    research_queries = [
+        f'"{company_name}" products services',
+        f'"{company_name}" customer support ecommerce',
+        f'"{company_name}" automation AI technology',
+        f'"{company_name}" growth expansion news',
+    ]
+
+    all_evidence = []
+
+    for query in research_queries:
+
+        results = search_web(
+            query=query,
+            max_results=max_results_per_query,
+        )
+
+        for result in results:
+
+            all_evidence.append(
+                {
+                    "company": company_name,
+                    "query": query,
+                    "title": result["title"],
+                    "url": result["url"],
+                    "content": result["content"],
+                    "search_score": result["score"],
+                    "source": "Tavily",
+                }
+            )
+
+    return all_evidence
 
 # ============================================================
 # TEST
