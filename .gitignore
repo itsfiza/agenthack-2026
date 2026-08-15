@@ -14,3 +14,9 @@ chroma_db/
 
 .DS_Store
 Thumbs.db
+.venv/
+__pycache__/
+*.pyc
+.env
+.ipynb_checkpoints/
+memory/pipeline_memory.json

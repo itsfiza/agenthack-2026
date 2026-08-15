@@ -9,7 +9,11 @@ from agents.research import research_leads
 # ============================================================
 # STATE
 # ============================================================
-
+from memory.memory import (
+    remember_lead,
+    remember_interaction,
+    get_lead_memory,
+)
 class SalesState(TypedDict, total=False):
 
     # --------------------------------------------------------
@@ -1024,7 +1028,113 @@ def no_qualified_leads(
         "pipeline_status": "NOT_QUALIFIED",
         "current_stage": "NO_QUALIFIED_LEADS",
     }
+# ============================================================
+# NODE — SAVE LEAD TO PIPELINE MEMORY
+# ============================================================
 
+def save_to_pipeline(state: SalesState) -> SalesState:
+
+    print("\n" + "=" * 60)
+    print("[PIPELINE]")
+    print("=" * 60)
+
+    selected_lead = state.get(
+        "selected_lead"
+    )
+
+    if not selected_lead:
+
+        print(
+            "[PIPELINE] No selected lead."
+        )
+
+        return {
+            **state,
+            "pipeline_status": "NO_LEAD"
+        }
+
+    company_name = selected_lead.get(
+        "name",
+        "Unknown"
+    )
+
+    qualification = state.get(
+        "qualifications",
+        {}
+    ).get(
+        company_name,
+        {}
+    )
+
+    service = state.get(
+        "recommended_service",
+        {}
+    )
+
+    decision_maker = state.get(
+        "decision_maker",
+        {}
+    )
+
+    outreach = state.get(
+        "outreach",
+        {}
+    )
+
+    lead_record = {
+
+        "company": company_name,
+
+        "website": selected_lead.get(
+            "website",
+            ""
+        ),
+
+        "qualification": qualification,
+
+        "recommended_service": service,
+
+        "decision_maker": decision_maker,
+
+        "outreach": outreach,
+
+        "pipeline_status": "CONTACTED",
+    }
+
+    remember_lead(
+        company_name,
+        lead_record
+    )
+
+    remember_interaction(
+        company_name,
+        {
+            "type": "outreach_generated",
+            "service": service.get(
+                "service",
+                ""
+            ),
+            "status": "CONTACTED"
+        }
+    )
+
+    print(
+        f"[PIPELINE] Saved: {company_name}"
+    )
+
+    print(
+        "[PIPELINE] Status: CONTACTED"
+    )
+
+    return {
+        **state,
+
+        "pipeline_status":
+            "CONTACTED",
+
+        "current_stage":
+            "PIPELINE_UPDATED",
+    }
 
 # ============================================================
 # GRAPH
@@ -1089,7 +1199,10 @@ def build_sales_graph():
         "no_qualified_leads",
         no_qualified_leads
     )
-
+    graph.add_node(
+    "save_to_pipeline",
+    save_to_pipeline
+     )
     # --------------------------------------------------------
     # Main pipeline
     # --------------------------------------------------------
@@ -1155,9 +1268,14 @@ def build_sales_graph():
     )
 
     graph.add_edge(
-        "generate_outreach",
-        END
+    "generate_outreach",
+    "save_to_pipeline"
     )
+
+    graph.add_edge(
+    "save_to_pipeline",
+    END
+     )
 
     # --------------------------------------------------------
     # Negative path
@@ -1312,7 +1430,20 @@ if __name__ == "__main__":
             "pipeline_status"
         )
     )
+    print(
+    "\nOutreach:"
+    )
 
+    print(
+       final_state.get(
+           "outreach",
+           {}
+        )
+)
+
+    print(
+    "\nPipeline memory updated successfully."
+    )
     print(
         "\nErrors:"
     )
