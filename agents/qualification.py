@@ -26,14 +26,11 @@ def format_evidence(
 
     formatted = []
 
-    for i, item in enumerate(
-        evidence,
-        start=1
-    ):
+    for i, item in enumerate(evidence, start=1):
 
         formatted.append(
             f"""
-EVIDENCE {i}
+--- EVIDENCE {i} ---
 
 Title:
 {item.get("title", "")}
@@ -42,17 +39,74 @@ URL:
 {item.get("url", "")}
 
 Content:
-{item.get("content", "")[:1500]}
+{item.get("content", "")[:1800]}
 """
         )
 
-    return "\n".join(
-        formatted
-    )
+    return "\n".join(formatted)
 
 
 # ============================================================
-# QUALIFICATION
+# EXTRACT JSON SAFELY
+# ============================================================
+
+def extract_json(text: str) -> Dict[str, Any]:
+
+    if not text:
+        raise ValueError(
+            "LLM returned an empty response."
+        )
+
+    text = text.strip()
+
+    # Remove markdown fences if present
+    if "```json" in text:
+
+        text = text.replace(
+            "```json",
+            ""
+        )
+
+    if "```" in text:
+
+        text = text.replace(
+            "```",
+            ""
+        )
+
+    text = text.strip()
+
+    # Find first { and last }
+    start = text.find("{")
+    end = text.rfind("}")
+
+    if start == -1 or end == -1:
+
+        raise ValueError(
+            f"LLM response did not contain JSON.\n\n"
+            f"RAW RESPONSE:\n{text}"
+        )
+
+    json_text = text[start:end + 1]
+
+    try:
+
+        return json.loads(
+            json_text
+        )
+
+    except json.JSONDecodeError as e:
+
+        raise ValueError(
+            f"Invalid JSON returned by LLM.\n\n"
+            f"JSON ATTEMPT:\n{json_text}\n\n"
+            f"RAW RESPONSE:\n{text}\n\n"
+            f"ERROR:\n{e}"
+        )
+
+
+# ============================================================
+# QUALIFY LEAD
 # ============================================================
 
 def qualify_lead(
@@ -70,30 +124,30 @@ def qualify_lead(
     prompt = f"""
 You are a B2B sales qualification analyst.
 
-Your job is to evaluate ONE potential prospect for
-NexaFlow AI.
+Evaluate ONE potential prospect for NexaFlow AI.
 
 IMPORTANT RULES:
 
-1. Use ONLY the provided ICP and research evidence.
-2. Do NOT invent company facts.
-3. If evidence is missing, say that it is missing.
-4. Do not treat a search result title alone as proof.
-5. Every important conclusion must be supported by evidence.
-6. Return ONLY valid JSON.
-7. The total score MUST equal the sum of the five
-   category scores.
+- Use ONLY the supplied ICP, company information,
+  and research evidence.
+- NEVER invent facts.
+- If evidence is insufficient, reduce the score.
+- A blog article or directory listing is NOT automatically
+  proof that the named entity is a target company.
+- Do not treat a search-result title as proof.
+- Explain the qualification using evidence.
+- Return ONLY a JSON object.
+- Do not use markdown.
+- Do not write anything before or after the JSON.
 
 NEXAFLOW SERVICES:
 
-NexaFlow offers:
-
-- Web AI Chatbot
-- WhatsApp AI Assistant
-- Workflow Automation
-- AI Voice Agent
-- Knowledge Assistant
-- Sales Automation
+1. Web AI Chatbot
+2. WhatsApp AI Assistant
+3. Workflow Automation
+4. AI Voice Agent
+5. Knowledge Assistant
+6. Sales Automation
 
 ICP:
 
@@ -109,23 +163,13 @@ RESEARCH EVIDENCE:
 
 SCORING:
 
-ICP Fit:
-0-25
+ICP Fit: 0-25
+Problem Fit: 0-25
+Service Fit: 0-25
+Buying Signals: 0-15
+Evidence Quality: 0-10
 
-Problem Fit:
-0-25
-
-Service Fit:
-0-25
-
-Buying Signals:
-0-15
-
-Evidence Quality:
-0-10
-
-Total:
-100 maximum.
+Total must equal the sum of the five scores.
 
 CLASSIFICATION:
 
@@ -133,7 +177,7 @@ CLASSIFICATION:
 60-79 = POTENTIAL
 0-59 = NOT_QUALIFIED
 
-Return exactly this JSON structure:
+Return EXACTLY:
 
 {{
     "icp_fit": 0,
@@ -154,58 +198,82 @@ Return exactly this JSON structure:
 }}
 """
 
+    # --------------------------------------------------------
+    # Call LLM
+    # --------------------------------------------------------
+
     response = llm.invoke(
         prompt
     )
 
+    # LangChain normally returns this as a string,
+    # but handle unusual responses safely.
+
     raw = response.content
 
-    # --------------------------------------------------------
-    # Parse JSON
-    # --------------------------------------------------------
+    if isinstance(raw, list):
 
-    try:
-
-        result = json.loads(
-            raw
+        raw = "".join(
+            str(part)
+            for part in raw
         )
 
-    except json.JSONDecodeError:
+    raw = str(raw).strip()
 
-        # Try extracting JSON from markdown fences
-        cleaned = (
-            raw
-            .replace(
-                "```json",
-                ""
+    print("\n" + "=" * 60)
+    print("LLM QUALIFICATION RESPONSE")
+    print("=" * 60)
+    print(raw)
+    print("=" * 60)
+
+    # --------------------------------------------------------
+    # Parse
+    # --------------------------------------------------------
+
+    result = extract_json(
+        raw
+    )
+
+    # --------------------------------------------------------
+    # Validate required fields
+    # --------------------------------------------------------
+
+    required_fields = [
+        "icp_fit",
+        "problem_fit",
+        "service_fit",
+        "buying_signals",
+        "evidence_quality",
+        "reason",
+        "evidence",
+    ]
+
+    for field in required_fields:
+
+        if field not in result:
+
+            raise ValueError(
+                f"Qualification response is missing "
+                f"required field: {field}"
             )
-            .replace(
-                "```",
-                ""
-            )
-            .strip()
-        )
-
-        result = json.loads(
-            cleaned
-        )
 
     # --------------------------------------------------------
-    # Safety check score
+    # Calculate score ourselves
     # --------------------------------------------------------
 
     calculated_score = (
-        result["icp_fit"]
-        + result["problem_fit"]
-        + result["service_fit"]
-        + result["buying_signals"]
-        + result["evidence_quality"]
+        int(result["icp_fit"])
+        + int(result["problem_fit"])
+        + int(result["service_fit"])
+        + int(result["buying_signals"])
+        + int(result["evidence_quality"])
     )
 
     result["total_score"] = calculated_score
 
-    # Recalculate classification ourselves
-    # instead of blindly trusting the LLM.
+    # --------------------------------------------------------
+    # Classification ourselves
+    # --------------------------------------------------------
 
     if calculated_score >= 80:
 
