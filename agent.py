@@ -1098,7 +1098,7 @@ def save_to_pipeline(state: SalesState) -> SalesState:
 
         "outreach": outreach,
 
-        "pipeline_status": "CONTACTED",
+        "pipeline_status": "OUTREACH_DRAFTED",
     }
 
     remember_lead(
