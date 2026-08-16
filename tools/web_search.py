@@ -81,10 +81,8 @@ def is_obvious_non_company(url: str, title: str) -> bool:
             return True
 
     return False
-
-
 # ============================================================
-# COMPANY DISCOVERY
+# COMPANY ENTITY DISCOVERY
 # ============================================================
 
 def discover_companies(
@@ -94,44 +92,65 @@ def discover_companies(
     target_problem: str = "",
     max_results: int = 10,
 ) -> List[Dict[str, Any]]:
+    """
+    Discover REAL company entities.
 
-    print(
-        f"[DISCOVERY] Query: "
-        f"{industry} companies "
-        f"{location} "
-        f"{company_size} "
-        f"{target_problem}"
-    )
+    Search engines often return:
+        - directories
+        - listicles
+        - blog posts
+        - social media
+        - comparison pages
 
-    # --------------------------------------------------------
-    # Use several targeted queries.
-    #
-    # This is much more reliable than one giant query.
-    # --------------------------------------------------------
+    These are NOT companies.
 
-    queries = [
+    This function attempts to reject those pages and only
+    return results that look like actual company websites.
+    """
+
+    query_variants = [
         f"{industry} companies {location} {company_size}",
-
-        f"{industry} companies {location} "
-        f"{target_problem}",
-
-        f"{industry} businesses {location} "
-        f"customer service automation",
-
-        f"{industry} companies {location} "
-        f"WhatsApp customer support",
-
+        f"{industry} businesses {location} customer support",
+        f"{industry} companies {location} WhatsApp",
         f"{industry} companies {location} AI automation",
+        f"{industry} companies {location} customer service",
     ]
 
-    companies = []
-    seen_urls = set()
+    candidates = []
 
-    # --------------------------------------------------------
-    # Search each query
-    # --------------------------------------------------------
+    rejected_domains = [
+        "ensun.io",
+        "goodfirms.co",
+        "designrush.com",
+        "clutch.co",
+        "linkedin.com",
+        "facebook.com",
+        "instagram.com",
+        "youtube.com",
+        "reddit.com",
+        "medium.com",
+        "forbes.com",
+        "crunchbase.com",
+    ]
 
-    for query in queries:
+    rejected_title_patterns = [
+        "top ",
+        "best ",
+        "list of",
+        "companies in",
+        "companies -",
+        "companies |",
+        "directory",
+        "reviews",
+        "ranking",
+        "ranked",
+        "guide",
+        "comparison",
+        "marketplace",
+        "emails & contacts",
+    ]
+
+    for query in query_variants:
 
         print(
             f"\n[DISCOVERY] Searching: {query}"
@@ -139,7 +158,7 @@ def discover_companies(
 
         try:
 
-            raw_results = search_web(
+            results = search_web(
                 query=query,
                 max_results=max_results,
             )
@@ -152,162 +171,157 @@ def discover_companies(
 
             continue
 
-        for result in raw_results:
+        for result in results:
 
-            name = result.get(
-                "title",
-                ""
-            ).strip()
+            title = (
+                result.get(
+                    "title",
+                    ""
+                )
+                .strip()
+            )
 
-            url = result.get(
-                "url",
-                ""
-            ).strip()
+            url = (
+                result.get(
+                    "url",
+                    ""
+                )
+                .strip()
+            )
 
-            description = result.get(
-                "content",
-                ""
-            ).strip()
+            content = (
+                result.get(
+                    "content",
+                    ""
+                )
+                .strip()
+            )
 
-            # ------------------------------------------------
-            # Skip empty results
-            # ------------------------------------------------
-
-            if not name or not url:
-                continue
-
-            # ------------------------------------------------
-            # Avoid duplicate URLs
-            # ------------------------------------------------
-
-            if url in seen_urls:
-                continue
+            title_lower = title.lower()
+            url_lower = url.lower()
 
             # ------------------------------------------------
-            # Reject social media only
+            # Reject known directories/social platforms
             # ------------------------------------------------
 
-            if is_obvious_non_company(
-                url,
-                name
+            if any(
+                domain in url_lower
+                for domain in rejected_domains
             ):
 
                 print(
-                    f"[DISCOVERY] Skipping social source: "
-                    f"{name}"
+                    f"[DISCOVERY] Rejected source: {title}"
                 )
 
                 continue
 
             # ------------------------------------------------
-            # Basic relevance check
+            # Reject obvious listicles/articles
             # ------------------------------------------------
 
-            text = (
-                name
-                + " "
-                + description
-            ).lower()
-
-            relevance_terms = [
-                "ecommerce",
-                "e-commerce",
-                "online store",
-                "retail",
-                "shop",
-                "shopping",
-                "customer",
-                "support",
-                "automation",
-                "ai",
-                "whatsapp",
-                "commerce",
-            ]
-
-            relevance_score = sum(
-                1
-                for term in relevance_terms
-                if term in text
-            )
-
-            # If the result has no relationship whatsoever
-            # to our ICP, skip it.
-            if relevance_score < 2:
+            if any(
+                pattern in title_lower
+                for pattern in rejected_title_patterns
+            ):
 
                 print(
-                    f"[DISCOVERY] Skipping low relevance: "
-                    f"{name}"
+                    f"[DISCOVERY] Rejected list/article: {title}"
                 )
 
                 continue
 
-            seen_urls.add(url)
+            # ------------------------------------------------
+            # Basic company-content signals
+            # ------------------------------------------------
 
-            companies.append(
-                {
-                    "name": name,
+            company_signals = [
+                "about us",
+                "our services",
+                "our products",
+                "contact us",
+                "solutions",
+                "customers",
+                "company",
+                "we provide",
+                "we offer",
+                "founded",
+            ]
 
-                    "website": url,
+            signal_count = sum(
+                signal in content.lower()
+                for signal in company_signals
+            )
 
-                    "description": description,
+            if signal_count < 2:
 
-                    "search_score": result.get(
-                        "score",
-                        0
-                    ),
+                print(
+                    f"[DISCOVERY] Rejected weak entity: {title}"
+                )
 
-                    "relevance_score":
-                        relevance_score,
+                continue
 
-                    "discovery_query": query,
+            # ------------------------------------------------
+            # Avoid duplicates
+            # ------------------------------------------------
 
-                    "source":
-                        "Tavily Web Search",
-                }
+            if any(
+                existing["website"] == url
+                for existing in candidates
+            ):
+
+                continue
+
+            # ------------------------------------------------
+            # Accept candidate
+            # ------------------------------------------------
+
+            candidate = {
+                "name": title,
+                "website": url,
+                "description": content,
+                "search_score": result.get(
+                    "score",
+                    0
+                ),
+                "discovery_query": query,
+                "source": "Tavily Web Search",
+            }
+
+            candidates.append(
+                candidate
             )
 
             print(
-                f"[DISCOVERY] Candidate accepted: "
-                f"{name}"
+                f"[DISCOVERY] Candidate accepted: {title}"
             )
 
-            # ------------------------------------------------
-            # Stop after enough candidates
-            # ------------------------------------------------
-
-            if len(companies) >= max_results:
-                break
-
-        if len(companies) >= max_results:
-            break
-
     # --------------------------------------------------------
-    # Rank candidates
+    # Sort by search confidence
     # --------------------------------------------------------
 
-    companies = sorted(
-        companies,
-        key=lambda x: (
-            x.get(
-                "relevance_score",
-                0
-            ),
-            x.get(
-                "search_score",
-                0
-            ),
+    candidates = sorted(
+        candidates,
+        key=lambda x: x.get(
+            "search_score",
+            0
         ),
         reverse=True,
     )
 
-    companies = companies[:max_results]
+    # --------------------------------------------------------
+    # Limit results
+    # --------------------------------------------------------
+
+    candidates = candidates[
+        :max_results
+    ]
 
     print(
         f"\n[DISCOVERY] "
-        f"{len(companies)} company candidates accepted."
+        f"{len(candidates)} company candidates accepted."
     )
 
-    return companies
+    return candidates
 
 
 # ============================================================
