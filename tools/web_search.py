@@ -3,7 +3,7 @@ import json
 from typing import List, Dict, Any
 
 from tavily import TavilyClient
-from anthropic import Anthropic
+from groq import Groq
 
 
 # ============================================================
@@ -45,24 +45,153 @@ def search_web(query: str, max_results: int = 5) -> List[Dict[str, Any]]:
 
 
 # ============================================================
-# LLM CLIENT — GOOGLE GEMINI (free tier)
+# GROQ CLIENT
 # ============================================================
 
-from google import genai
+def get_groq_client() -> Groq:
+    """
+    Create Groq client using GROQ_API_KEY.
+    """
 
-def _call_llm(prompt: str) -> str:
-    api_key = os.getenv("GEMINI_API_KEY")
+    api_key = os.getenv("GROQ_API_KEY")
+
     if not api_key:
-        raise EnvironmentError("GEMINI_API_KEY is not set.")
+        raise EnvironmentError(
+            "GROQ_API_KEY is not set."
+        )
 
-    client = genai.Client(api_key=api_key)
-    response = client.models.generate_content(
-        model="gemini-2.5-flash",
-        contents=prompt,
+    return Groq(
+        api_key=api_key
     )
-    return response.text.strip()
+# ============================================================
+# EXTRACT REAL COMPANY NAMES
+# ============================================================
 
+def extract_company_names(
+    search_results: List[Dict[str, Any]],
+    max_companies: int = 10,
+) -> List[str]:
+    """
+    Use Groq to extract real company names from web-search
+    results.
 
+    The LLM is NOT allowed to invent companies.
+    It can only extract names supported by the provided
+    search-result content.
+    """
+
+    client = get_groq_client()
+
+    source_text = ""
+
+    for i, result in enumerate(search_results):
+
+        source_text += f"""
+RESULT {i + 1}
+
+TITLE:
+{result.get("title", "")}
+
+URL:
+{result.get("url", "")}
+
+CONTENT:
+{result.get("content", "")[:4000]}
+
+----------------------------------------
+"""
+
+    prompt = f"""
+You are an entity extraction system for a B2B sales agent.
+
+We are looking for REAL companies operating in Pakistan.
+
+Extract ONLY actual company/business names mentioned
+inside the provided search results.
+
+DO NOT return:
+- article titles
+- directory names
+- listicle titles
+- websites
+- social media pages
+- marketplace categories
+- generic descriptions
+- phrases such as "Top 100 E-Commerce Companies"
+- "GoodFirms"
+- "ensun"
+- "Shopify"
+- "F6S"
+- "StartupBlink"
+- "Upwork"
+
+IMPORTANT:
+Only extract a company if the search-result content actually
+mentions that company as a business.
+
+Return ONLY valid JSON.
+
+Format:
+
+[
+    "Company 1",
+    "Company 2",
+    "Company 3"
+]
+
+Maximum {max_companies} companies.
+
+SEARCH RESULTS:
+
+{source_text}
+"""
+
+    response = client.chat.completions.create(
+        model="llama-3.1-8b-instant",
+        messages=[
+            {
+                "role": "system",
+                "content": (
+                    "You extract real company entities from "
+                    "web search evidence. Never invent names."
+                ),
+            },
+            {
+                "role": "user",
+                "content": prompt,
+            },
+        ],
+        temperature=0,
+    )
+
+    raw = response.choices[0].message.content.strip()
+
+    # Remove markdown fences if model adds them
+    raw = raw.replace("```json", "")
+    raw = raw.replace("```", "")
+    raw = raw.strip()
+
+    try:
+        companies = json.loads(raw)
+
+        if not isinstance(companies, list):
+            return []
+
+        return [
+            str(company).strip()
+            for company in companies
+            if str(company).strip()
+        ][:max_companies]
+
+    except json.JSONDecodeError:
+
+        print(
+            "[DISCOVERY] Could not parse company extraction response:"
+        )
+
+        print(raw)
+
+        return []
 # ============================================================
 # HELPER — REJECT OBVIOUS NON-COMPANY SOURCES
 # ============================================================
@@ -121,58 +250,147 @@ Example: ["Daraz", "PriceOye", "Yayvo"]"""
 # COMPANY DISCOVERY BY NAME (verification via Tavily)
 # ============================================================
 
-def discover_companies_by_name(
-    company_names: List[str],
+# ============================================================
+# COMPANY DISCOVERY
+# ============================================================
+
+def discover_companies(
+    location: str,
+    industry: str,
+    company_size: str = "",
+    target_problem: str = "",
     max_results: int = 10,
 ) -> List[Dict[str, Any]]:
     """
-    Verify each named company via Tavily and pull its real website + content.
+    Discover REAL company entities.
+
+    Tavily:
+        Finds relevant web pages.
+
+    Groq:
+        Extracts actual company names from those pages.
+
+    Tavily:
+        Then researches each named company.
     """
-    rejected_domains = [
-        "ensun.io", "goodfirms.co", "designrush.com", "clutch.co",
-        "linkedin.com", "facebook.com", "instagram.com", "youtube.com",
-        "reddit.com", "medium.com", "forbes.com", "crunchbase.com",
-        "wikipedia.org",
+
+    print(
+        "\n[DISCOVERY] Starting entity-based company discovery"
+    )
+
+    query_parts = [
+        f"{industry} companies",
+        location,
     ]
 
-    candidates = []
+    if company_size:
+        query_parts.append(
+            company_size
+        )
+
+    if target_problem:
+        query_parts.append(
+            target_problem
+        )
+
+    query = " ".join(query_parts)
+
+    print(
+        f"[DISCOVERY] Query: {query}"
+    )
+
+    # --------------------------------------------------------
+    # STEP 1 — Find source pages
+    # --------------------------------------------------------
+
+    raw_results = search_web(
+        query=query,
+        max_results=max_results,
+    )
+
+    print(
+        f"[DISCOVERY] Retrieved {len(raw_results)} web results."
+    )
+
+    if not raw_results:
+        return []
+
+    # --------------------------------------------------------
+    # STEP 2 — Extract actual companies
+    # --------------------------------------------------------
+
+    company_names = extract_company_names(
+        raw_results,
+        max_companies=max_results,
+    )
+
+    print(
+        f"[DISCOVERY] Extracted {len(company_names)} real company names."
+    )
 
     for name in company_names:
-        query = f'"{name}" official website'
-        print(f"\n[DISCOVERY] Verifying: {name}")
 
-        try:
-            results = search_web(query=query, max_results=3)
-        except Exception as e:
-            print(f"[DISCOVERY] Search failed for {name}: {e}")
+        print(
+            f"  ✓ {name}"
+        )
+
+    # --------------------------------------------------------
+    # STEP 3 — Research each company
+    # --------------------------------------------------------
+
+    companies = []
+
+    for company_name in company_names:
+
+        print(
+            f"\n[DISCOVERY] Verifying: {company_name}"
+        )
+
+        verification_query = (
+            f'"{company_name}" '
+            f'{location} '
+            f'{industry} '
+            f'company website'
+        )
+
+        verification_results = search_web(
+            query=verification_query,
+            max_results=3,
+        )
+
+        if not verification_results:
+            print(
+                f"[DISCOVERY] No evidence found for {company_name}"
+            )
             continue
 
-        best = None
-        for result in results:
-            url = result.get("url", "").lower()
-            if any(domain in url for domain in rejected_domains):
-                continue
-            best = result
-            break
+        best_result = verification_results[0]
 
-        if not best:
-            print(f"[DISCOVERY] No clean website found for {name}, skipping.")
-            continue
+        companies.append(
+            {
+                "name": company_name,
+                "website": best_result.get(
+                    "url",
+                    ""
+                ),
+                "description": best_result.get(
+                    "content",
+                    ""
+                ),
+                "search_score": best_result.get(
+                    "score",
+                    0
+                ),
+                "discovery_query": query,
+                "source": "Tavily + Groq Entity Discovery",
+            }
+        )
 
-        candidate = {
-            "name": name,
-            "website": best.get("url", ""),
-            "description": best.get("content", ""),
-            "search_score": best.get("score", 0),
-            "discovery_query": query,
-            "source": "Claude seed + Tavily verification",
-        }
-        candidates.append(candidate)
-        print(f"[DISCOVERY] Candidate accepted: {name} → {candidate['website']}")
+    print(
+        f"\n[DISCOVERY] {len(companies)} verified companies accepted."
+    )
 
-    candidates = candidates[:max_results]
-    print(f"\n[DISCOVERY] {len(candidates)} company candidates accepted.")
-    return candidates
+    return companies
 
 
 # ============================================================
