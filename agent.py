@@ -2,10 +2,13 @@ from typing import TypedDict, List, Dict, Any
 
 from langgraph.graph import StateGraph, START, END
 
-from tools.web_search import discover_companies
+from tools.web_search import (
+    generate_seed_company_names,
+    discover_companies_by_name,
+)
+
 from agents.qualification import qualify_lead
 from agents.research import research_leads
-from tools.web_search import discover_companies, generate_seed_company_names, discover_companies_by_name
 # ============================================================
 # STATE
 # ============================================================
@@ -116,36 +119,151 @@ def create_icp(state: SalesState) -> SalesState:
 # NODE 2 — DISCOVER LEADS
 # ============================================================
 
+# ============================================================
+# NODE 2 — DISCOVER REAL COMPANY LEADS
+# ============================================================
+
+# ============================================================
+# NODE 2 — DISCOVER REAL COMPANY ENTITIES
+# ============================================================
+
 def discover_leads(state: SalesState) -> SalesState:
 
     print("\n" + "=" * 60)
-    print("[DISCOVERY] Searching the web")
+    print("[DISCOVERY] Finding real company entities")
     print("=" * 60)
 
     icp = state.get("icp", {})
 
     try:
 
-        leads = discover_companies(
-            location=icp.get("location", ""),
-            industry=icp.get("industry", ""),
-            company_size=icp.get("company_size", ""),
-            target_problem=icp.get("target_problem", ""),
-            max_results=5,
+        # ----------------------------------------------------
+        # STEP 1 — Generate real company names from ICP
+        # ----------------------------------------------------
+
+        print(
+            "\n[DISCOVERY] Generating seed company names..."
+        )
+
+        company_names = generate_seed_company_names(
+            icp=icp,
+            max_names=10,
         )
 
         print(
-            f"\n[DISCOVERY] Found {len(leads)} candidates."
+            f"[DISCOVERY] Generated {len(company_names)} "
+            f"company names."
         )
 
-        for lead in leads:
+        for name in company_names:
+            print(f"  • {name}")
+
+        # ----------------------------------------------------
+        # STEP 2 — Research those named companies
+        # ----------------------------------------------------
+
+        if not company_names:
+
             print(
-                f"  • {lead.get('name', 'Unknown')}"
+                "[DISCOVERY] No company names generated."
             )
+
+            return {
+                **state,
+                "discovered_leads": [],
+                "current_stage": "NO_COMPANIES_FOUND",
+            }
+
+        print(
+            "\n[DISCOVERY] Researching named companies..."
+        )
+
+        leads = discover_companies_by_name(
+            company_names=company_names,
+            location=icp.get("location", ""),
+            industry=icp.get("industry", ""),
+            target_problem=icp.get("target_problem", ""),
+            max_results_per_company=3,
+        )
+
+        # ----------------------------------------------------
+        # STEP 3 — Mark entities as verified
+        # ----------------------------------------------------
+
+        verified_leads = []
+
+        for lead in leads:
+
+            lead = dict(lead)
+
+            lead["entity_verified"] = True
+
+            # Preserve the original seed name
+            if not lead.get("seed_company_name"):
+                lead["seed_company_name"] = (
+                    lead.get("name", "")
+                )
+
+            verified_leads.append(lead)
+
+        # ----------------------------------------------------
+        # STEP 4 — Deduplicate by company name
+        # ----------------------------------------------------
+
+        unique_leads = {}
+
+        for lead in verified_leads:
+
+            company_name = (
+                lead.get("name")
+                or lead.get("company_name")
+                or lead.get("seed_company_name")
+            )
+
+            if not company_name:
+                continue
+
+            if company_name not in unique_leads:
+                unique_leads[company_name] = lead
+
+        final_leads = list(
+            unique_leads.values()
+        )
+
+        # ----------------------------------------------------
+        # OUTPUT
+        # ----------------------------------------------------
+
+        print(
+            f"\n[DISCOVERY] "
+            f"{len(final_leads)} real company candidates found."
+        )
+
+        for lead in final_leads:
+
+            company_name = (
+                lead.get("name")
+                or lead.get("company_name")
+                or lead.get("seed_company_name")
+            )
+
+            website = lead.get(
+                "website",
+                ""
+            )
+
+            print(
+                f"  ✓ {company_name}"
+            )
+
+            if website:
+                print(
+                    f"    {website}"
+                )
 
         return {
             **state,
-            "discovered_leads": leads,
+            "discovered_leads": final_leads,
             "current_stage": "LEADS_DISCOVERED",
         }
 
@@ -155,13 +273,17 @@ def discover_leads(state: SalesState) -> SalesState:
             f"Lead discovery failed: {str(e)}"
         )
 
-        print(f"\n[ERROR] {error_message}")
+        print(
+            f"\n[ERROR] {error_message}"
+        )
 
         errors = list(
             state.get("errors", [])
         )
 
-        errors.append(error_message)
+        errors.append(
+            error_message
+        )
 
         return {
             **state,
@@ -230,9 +352,12 @@ def filter_leads(state: SalesState) -> SalesState:
 
     for lead in leads:
 
+        if lead.get("entity_verified") is not True:
+           continue
+
         title = lead.get(
-            "name",
-            ""
+        "name",
+        ""
         ).lower()
 
         url = lead.get(
