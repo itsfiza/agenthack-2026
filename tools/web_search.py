@@ -249,7 +249,123 @@ Example: ["Daraz", "PriceOye", "Yayvo"]"""
 # ============================================================
 # COMPANY DISCOVERY BY NAME (verification via Tavily)
 # ============================================================
+def discover_companies_by_name(
+    company_names: List[str],
+    location: str = "",
+    industry: str = "",
+    target_problem: str = "",
+    max_results_per_company: int = 3,
+) -> List[Dict[str, Any]]:
+    """
+    Research real, named companies instead of treating
+    directory/listicle pages as companies.
 
+    The company names come from the seed-generation stage.
+    Tavily is then used to verify/research each named company.
+    """
+
+    companies = []
+
+    for company_name in company_names:
+
+        company_name = company_name.strip()
+
+        if not company_name:
+            continue
+
+        query_parts = [
+            f'"{company_name}"',
+        ]
+
+        if location:
+            query_parts.append(location)
+
+        if industry:
+            query_parts.append(industry)
+
+        if target_problem:
+            query_parts.append(target_problem)
+
+        query = " ".join(query_parts)
+
+        print(
+            f"\n[DISCOVERY] Verifying company: {company_name}"
+        )
+
+        try:
+            results = search_web(
+                query=query,
+                max_results=max_results_per_company,
+            )
+
+            # Look for the strongest result belonging
+            # to the named company.
+            for result in results:
+
+                title = result.get(
+                    "title",
+                    ""
+                )
+
+                url = result.get(
+                    "url",
+                    ""
+                )
+
+                content = result.get(
+                    "content",
+                    ""
+                )
+
+                combined = (
+                    title
+                    + " "
+                    + url
+                    + " "
+                    + content
+                ).lower()
+
+                company_lower = company_name.lower()
+
+                # Basic entity verification.
+                if company_lower not in combined:
+                    continue
+
+                companies.append(
+                    {
+                        "name": company_name,
+                        "website": url,
+                        "description": content,
+                        "search_score": result.get(
+                            "score",
+                            0
+                        ),
+                        "discovery_query": query,
+                        "source": "Tavily Named Company Search",
+                    }
+                )
+
+                print(
+                    f"[DISCOVERY] ✓ Verified: {company_name}"
+                )
+
+                # One strongest result is enough
+                # for the discovery stage.
+                break
+
+            else:
+                print(
+                    f"[DISCOVERY] ✗ Could not verify: {company_name}"
+                )
+
+        except Exception as e:
+
+            print(
+                f"[DISCOVERY] Search failed for "
+                f"{company_name}: {e}"
+            )
+
+    return companies
 # ============================================================
 # COMPANY DISCOVERY
 # ============================================================
@@ -485,6 +601,7 @@ def discover_companies(
 
     print(f"\n[DISCOVERY] {len(candidates)} company candidates accepted.")
     return candidates
+
 
 
 # ============================================================
